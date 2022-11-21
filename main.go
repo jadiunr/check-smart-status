@@ -3,8 +3,11 @@ package main
 import (
 	"fmt"
 	"reflect"
+	"sort"
+	"strings"
 
 	"github.com/anatol/smart.go"
+	"github.com/iancoleman/strcase"
 	"github.com/jaypipes/ghw"
 	"github.com/sensu/sensu-go/types"
 	"github.com/sensu/sensu-plugin-sdk/sensu"
@@ -14,6 +17,34 @@ import (
 type Config struct {
 	sensu.PluginConfig
 	
+}
+
+type InfluxDBLine struct {
+	Metrics map[string][]*InfluxDBMetric
+}
+
+type InfluxDBMetric struct {
+	Tags map[string]string
+	Value float64
+}
+
+func (s InfluxDBLine) generateInfluxDBLine() {
+	var metricNamesSorted []string
+	for key, _ := range s.Metrics {
+		metricNamesSorted = append(metricNamesSorted, key)
+	}
+	sort.Strings(metricNamesSorted)
+
+	for _, metricName := range metricNamesSorted {
+		for _, metric := range s.Metrics[metricName] {
+			var tags []string
+			for tagName, tagValue := range metric.Tags {
+				tags = append(tags, fmt.Sprintf("%s=%s", strcase.ToSnake(tagName), tagValue))
+			}
+			sort.Strings(tags)
+			fmt.Printf("smart_%s,%s value=%.2f\n", strcase.ToSnake(metricName), strings.Join(tags, ","), metric.Value)
+		}
+	}
 }
 
 var (
@@ -38,6 +69,9 @@ func checkArgs(event *types.Event) (int, error) {
 }
 
 func executeCheck(event *types.Event) (int, error) {
+	influxDBLine := InfluxDBLine{
+		Metrics: make(map[string][]*InfluxDBMetric),
+	}
 	block, err := ghw.Block()
 	if err != nil {
 		return sensu.CheckStateCritical, err
@@ -46,13 +80,9 @@ func executeCheck(event *types.Event) (int, error) {
 	for _, disk := range block.Disks {
 		dev, err := smart.Open("/dev/" + disk.Name)
 		if err != nil {
-			return sensu.CheckStateCritical, err
+			continue
 		}
 		defer dev.Close()
-
-		fmt.Printf("%s: ", disk.Name)
-		fmt.Printf("%s, ", disk.DriveType.String())
-		fmt.Printf("%s\n\n", disk.StorageController.String())
 		switch sm := dev.(type) {
 		case *smart.SataDevice:
 			data, err := sm.ReadSMARTData()
@@ -60,15 +90,31 @@ func executeCheck(event *types.Event) (int, error) {
 				return sensu.CheckStateCritical, err
 			}
 			for _, attr := range data.Attrs {
-				fmt.Printf("%s %d: ", attr.Name, attr.Type)
+				influxDBMetric := InfluxDBMetric{
+					Tags: make(map[string]string),
+				}
 				if attr.Type == smart.AtaDeviceAttributeTypeTempMinMax {
 					temp, _, _, _, err := attr.ParseAsTemperature()
 					if err != nil {
 						return sensu.CheckStateCritical, err
 					}
-					fmt.Printf("%d\n", temp)
+					influxDBMetric.Tags["name"] = disk.Name
+					influxDBMetric.Tags["drive_type"] = disk.DriveType.String()
+					influxDBMetric.Tags["vendor"] = disk.Vendor
+					influxDBMetric.Tags["model"] = disk.Model
+					influxDBMetric.Tags["serial_number"] = disk.SerialNumber
+					influxDBMetric.Tags["storage_controller"] = disk.StorageController.String()
+					influxDBMetric.Value = float64(temp)
+					influxDBLine.Metrics[attr.Name] = append(influxDBLine.Metrics[attr.Name], &influxDBMetric)
 				} else {
-					fmt.Printf("%d\n", attr.ValueRaw)
+					influxDBMetric.Tags["name"] = disk.Name
+					influxDBMetric.Tags["drive_type"] = disk.DriveType.String()
+					influxDBMetric.Tags["vendor"] = disk.Vendor
+					influxDBMetric.Tags["model"] = disk.Model
+					influxDBMetric.Tags["serial_number"] = disk.SerialNumber
+					influxDBMetric.Tags["storage_controller"] = disk.StorageController.String()
+					influxDBMetric.Value = float64(attr.ValueRaw)
+					influxDBLine.Metrics[attr.Name] = append(influxDBLine.Metrics[attr.Name], &influxDBMetric)
 				}
 			}
 		case *smart.NVMeDevice:
@@ -97,5 +143,6 @@ func executeCheck(event *types.Event) (int, error) {
 		}
 	}
 
+	influxDBLine.generateInfluxDBLine()
 	return sensu.CheckStateOK, nil
 }

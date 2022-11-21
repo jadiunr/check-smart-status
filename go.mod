@@ -9,6 +9,7 @@ require (
 
 require (
 	github.com/anatol/smart.go v0.0.0-20220716162959-68f00803d38b
+	github.com/iancoleman/strcase v0.2.0
 	github.com/jaypipes/ghw v0.9.0
 )
 
