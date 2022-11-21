@@ -28,9 +28,23 @@ type InfluxDBMetric struct {
 	Value float64
 }
 
-func (s InfluxDBLine) generateInfluxDBLine() {
+func (s InfluxDBLine) addInfluxDBMetric(disk *ghw.Disk, attrName string, value float64) {
+	influxDBMetric := InfluxDBMetric{
+		Tags: make(map[string]string),
+	}
+	influxDBMetric.Tags["name"] = strings.ReplaceAll(disk.Name, " ", "\\ ")
+	influxDBMetric.Tags["drive_type"] = strings.ReplaceAll(disk.DriveType.String(), " ", "\\ ")
+	influxDBMetric.Tags["vendor"] = strings.ReplaceAll(disk.Vendor, " ", "\\ ")
+	influxDBMetric.Tags["model"] = strings.ReplaceAll(disk.Model, " ", "\\ ")
+	influxDBMetric.Tags["serial_number"] = strings.ReplaceAll(disk.SerialNumber, " ", "\\ ")
+	influxDBMetric.Tags["storage_controller"] = strings.ReplaceAll(disk.StorageController.String(), " ", "\\ ")
+	influxDBMetric.Value = value
+	s.Metrics[attrName] = append(s.Metrics[attrName], &influxDBMetric)
+}
+
+func (s InfluxDBLine) outputInfluxDBLine() {
 	var metricNamesSorted []string
-	for key, _ := range s.Metrics {
+	for key := range s.Metrics {
 		metricNamesSorted = append(metricNamesSorted, key)
 	}
 	sort.Strings(metricNamesSorted)
@@ -90,32 +104,17 @@ func executeCheck(event *types.Event) (int, error) {
 				return sensu.CheckStateCritical, err
 			}
 			for _, attr := range data.Attrs {
-				influxDBMetric := InfluxDBMetric{
-					Tags: make(map[string]string),
-				}
+				var value float64
 				if attr.Type == smart.AtaDeviceAttributeTypeTempMinMax {
 					temp, _, _, _, err := attr.ParseAsTemperature()
 					if err != nil {
 						return sensu.CheckStateCritical, err
 					}
-					influxDBMetric.Tags["name"] = disk.Name
-					influxDBMetric.Tags["drive_type"] = disk.DriveType.String()
-					influxDBMetric.Tags["vendor"] = disk.Vendor
-					influxDBMetric.Tags["model"] = disk.Model
-					influxDBMetric.Tags["serial_number"] = disk.SerialNumber
-					influxDBMetric.Tags["storage_controller"] = disk.StorageController.String()
-					influxDBMetric.Value = float64(temp)
-					influxDBLine.Metrics[attr.Name] = append(influxDBLine.Metrics[attr.Name], &influxDBMetric)
+					value = float64(temp)
 				} else {
-					influxDBMetric.Tags["name"] = disk.Name
-					influxDBMetric.Tags["drive_type"] = disk.DriveType.String()
-					influxDBMetric.Tags["vendor"] = disk.Vendor
-					influxDBMetric.Tags["model"] = disk.Model
-					influxDBMetric.Tags["serial_number"] = disk.SerialNumber
-					influxDBMetric.Tags["storage_controller"] = disk.StorageController.String()
-					influxDBMetric.Value = float64(attr.ValueRaw)
-					influxDBLine.Metrics[attr.Name] = append(influxDBLine.Metrics[attr.Name], &influxDBMetric)
+					value = float64(attr.ValueRaw)
 				}
+				influxDBLine.addInfluxDBMetric(disk, attr.Name, value)
 			}
 		case *smart.NVMeDevice:
 			data, err := sm.ReadSMART()
@@ -125,24 +124,25 @@ func executeCheck(event *types.Event) (int, error) {
 			v := reflect.ValueOf(data)
 			vData := reflect.Indirect(v)
 			for i := 0; i < vData.NumField(); i++ {
-				if vData.Type().Field(i).Name == "_" {
+				attrName := vData.Type().Field(i).Name
+				var value float64
+				if attrName == "_" {
 					continue
 				}
 				if vData.Field(i).CanUint() {
-					fmt.Printf("%s: ", vData.Type().Field(i).Name)
-					fmt.Printf("%d\n", vData.Field(i).Uint())
+					value = float64(vData.Field(i).Uint())
 				} else if vData.Field(i).Type().String() == "smart.Uint128" {
-					fmt.Printf("%s: ", vData.Type().Field(i).Name)
-					fmt.Printf("%d\n", vData.Field(i).FieldByName("Val").Index(0).Uint())
+					value = float64(vData.Field(i).FieldByName("Val").Index(0).Uint())
 				} else {
 					continue
 				}
+				influxDBLine.addInfluxDBMetric(disk, attrName, value)
 			}
 		case *smart.ScsiDevice:
 			continue
 		}
 	}
 
-	influxDBLine.generateInfluxDBLine()
+	influxDBLine.outputInfluxDBLine()
 	return sensu.CheckStateOK, nil
 }
