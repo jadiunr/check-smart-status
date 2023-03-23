@@ -19,6 +19,9 @@ The Sensu S.M.A.R.T. status check is a [Sensu Check][6] that provide S.M.A.R.T. 
 
 The user running Check must have permission to access the storage device. (e.g. Add `sudo` as prefix to the command)
 
+The only supported interfaces are SATA and NVMe.
+SCSI and other hardware RAID are not supported.
+
 ## Usage examples
 
 ```
